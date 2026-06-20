@@ -1,12 +1,16 @@
 package com.example.csor.ui
 
 import android.graphics.BlurMaskFilter
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -14,7 +18,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
@@ -25,60 +28,92 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlin.time.Duration.Companion.milliseconds
 
-enum class HubState { IDLE, SPACES, DRAWING }
+enum class HubState { IDLE, SPACES, SPACE }
+
+/**
+ * Data-driven menu node definition.
+ * Adding a new option to any tier is just adding an entry to a list.
+ */
+data class HubMenuNode(
+    val label: String,
+    val offsetX: Float,
+    val offsetY: Float,
+    val enabled: Boolean = true,
+    val onClick: () -> Unit = {}
+)
 
 @Composable
-fun HubPortalScreen(onNavigateToCanvas: () -> Unit) {
+fun HubPortalScreen(
+    hubState: HubState,
+    onHubStateChange: (HubState) -> Unit,
+    onSpaceCommit: (String, String) -> Unit
+) {
     var isExpanding by remember { mutableStateOf(false) }
     var zoomScale by remember { mutableFloatStateOf(1f) }
-    var hubState by remember { mutableStateOf(HubState.IDLE) }
+    var currentSpace by remember { mutableStateOf<String?>(null) }
     var selectedOption by remember { mutableStateOf<String?>(null) }
+    val isArmed = hubState == HubState.SPACE && selectedOption != null
 
-    // Expansion animation — burst transition
+    // Charging invitation — tracks finger-down on center bulb in IDLE
+    var isCharging by remember { mutableStateOf(false) }
+
+    // Back unwinds one step at a time — each press peels one layer.
+    BackHandler(enabled = hubState != HubState.IDLE || selectedOption != null) {
+        when {
+            selectedOption != null -> selectedOption = null
+            hubState == HubState.SPACE -> {
+                currentSpace = null
+                onHubStateChange(HubState.SPACES)
+            }
+            hubState == HubState.SPACES -> onHubStateChange(HubState.IDLE)
+        }
+        zoomScale = 1f
+    }
+
+    // Expansion animation — starts from current pinch position, fast burst
     val expandScale = remember { Animatable(1f) }
     val burstFlash = remember { Animatable(0f) }
-    val gridTension = remember { Animatable(0f) } // Inward pull before burst
 
-    // Trigger expansion from current finger position
+    // Trigger expansion when armed and pinch exceeds threshold
     LaunchedEffect(zoomScale) {
-        if (zoomScale > 2.5f && !isExpanding) {
-            if (hubState == HubState.DRAWING && selectedOption != null) {
-                isExpanding = true
-            }
+        if (zoomScale > 2.5f && !isExpanding && isArmed) {
+            isExpanding = true
         }
     }
 
     LaunchedEffect(isExpanding) {
         if (isExpanding) {
-            // Phase 1: Tension pull (grid contracts inward slightly)
-            gridTension.animateTo(1f, tween(150, easing = FastOutSlowInEasing))
-
-            // Phase 2: Scale up to near screen edges (burst point)
-            expandScale.snapTo(zoomScale.coerceAtLeast(1f))
-            expandScale.animateTo(3.5f, tween(300, easing = FastOutLinearInEasing))
-
-            // Phase 3: Burst flash
-            gridTension.snapTo(0f)
-            burstFlash.snapTo(1f)
-            burstFlash.animateTo(0f, tween(150, easing = LinearOutSlowInEasing))
-
-            // Phase 4: Navigate
-            onNavigateToCanvas()
-            isExpanding = false
-            zoomScale = 1f
-            hubState = HubState.IDLE
-            selectedOption = null
-            expandScale.snapTo(1f)
-            burstFlash.snapTo(0f)
+            try {
+                // Fast burst: scale from fingers -> flash -> navigate
+                expandScale.snapTo(zoomScale.coerceAtLeast(1f))
+                expandScale.animateTo(4f, tween(350, easing = FastOutSlowInEasing))
+                burstFlash.snapTo(1f)
+                burstFlash.animateTo(0f, tween(120, easing = LinearOutSlowInEasing))
+                // Committed option navigates to its destination
+                onSpaceCommit(currentSpace ?: "Image", selectedOption ?: "Canvas")
+            } finally {
+                // Guaranteed cleanup — runs even if this coroutine is cancelled
+                // mid-animation (which happens when onNavigateToCanvas removes
+                // HubPortalScreen from composition). Without finally, hubState
+                // would stay SPACE on return, blocking long-press from IDLE.
+                isExpanding = false
+                zoomScale = 1f
+                currentSpace = null
+                selectedOption = null
+                onHubStateChange(HubState.IDLE)
+                expandScale.snapTo(1f)
+                burstFlash.snapTo(0f)
+            }
         }
     }
 
     val finalScale = if (isExpanding) expandScale.value else zoomScale
 
     val menuProgress by animateFloatAsState(
-        targetValue = if (hubState != HubState.IDLE) 1f else 0f,
-        animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
+        targetValue = if (hubState != HubState.IDLE && selectedOption == null) 1f else 0f,
+        animationSpec = tween(600, easing = FastOutSlowInEasing),
         label = "menuProgress"
     )
 
@@ -93,9 +128,6 @@ fun HubPortalScreen(onNavigateToCanvas: () -> Unit) {
                 detectTransformGestures { _, _, zoom, _ ->
                     if (!isExpanding) {
                         zoomScale = (zoomScale * zoom).coerceAtLeast(1f)
-                        if (zoomScale > 1.1f && hubState == HubState.SPACES) {
-                            hubState = HubState.IDLE
-                        }
                     }
                 }
             },
@@ -105,13 +137,14 @@ fun HubPortalScreen(onNavigateToCanvas: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 100.dp)
+                .statusBarsPadding()
+                .padding(top = 60.dp)
         ) {
             Text(
-                text = "(: >x< :)",
+                text = " ",
                 color = Color(0xFF00FFCC).copy(alpha = 0.8f),
-                fontSize = 42.sp,
-                fontFamily = FontFamily.Monospace,
+                fontSize = 28.sp,
+                fontFamily = FontFamily.SansSerif,
                 fontWeight = FontWeight.Light,
                 modifier = Modifier.alpha(
                     when {
@@ -128,24 +161,37 @@ fun HubPortalScreen(onNavigateToCanvas: () -> Unit) {
             contentAlignment = Alignment.Center,
             modifier = Modifier
                 .size(400.dp)
-                .pointerInput(Unit) {
+                // Charging detection — tracks finger down/up for visual invitation
+                .pointerInput(hubState) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        if (hubState == HubState.IDLE) isCharging = true
+                        waitForUpOrCancellation()
+                        isCharging = false
+                    }
+                }
+                .pointerInput(hubState, selectedOption, currentSpace) {
                     detectTapGestures(
                         onLongPress = {
+                            // Long-press is the discovery gesture — opens from idle only.
+                            // Deeper navigation uses tap (one step back) or system back.
                             if (hubState == HubState.IDLE) {
-                                hubState = HubState.SPACES
+                                isCharging = false // Charging complete — discovery fires
+                                onHubStateChange(HubState.SPACES)
                             }
                             zoomScale = 1f
                         },
                         onTap = {
-                            // Tap cycles back: DRAWING → SPACES → IDLE
-                            when (hubState) {
-                                HubState.DRAWING -> {
-                                    hubState = HubState.SPACES
-                                    selectedOption = null
+                            // Tap unwinds one step at a time
+                            when {
+                                selectedOption != null -> selectedOption = null
+                                hubState == HubState.SPACE -> {
+                                    currentSpace = null
+                                    onHubStateChange(HubState.SPACES)
                                 }
-                                HubState.SPACES -> hubState = HubState.IDLE
-                                HubState.IDLE -> {}
+                                hubState == HubState.SPACES -> onHubStateChange(HubState.IDLE)
                             }
+                            zoomScale = 1f
                         }
                     )
                 }
@@ -163,36 +209,22 @@ fun HubPortalScreen(onNavigateToCanvas: () -> Unit) {
                 label = "pulseScale"
             )
 
-            // Emitting ripple — spring snap with fast alpha fade
-            // The impulse: sharp elastic snap at the start, then slow drift outward
+            // Emitting ripple to invite interaction
             val rippleScale by infiniteTransition.animateFloat(
                 initialValue = 1f,
-                targetValue = 2.5f,
+                targetValue = 2.9f,
                 animationSpec = infiniteRepeatable(
-                    animation = keyframes {
-                        durationMillis = 2800
-                        1f at 0 using FastOutSlowInEasing          // Start
-                        1.6f at 200 using LinearOutSlowInEasing    // Elastic snap — overshoot
-                        1.45f at 400 using FastOutSlowInEasing     // Settle back slightly
-                        2.5f at 2800 using LinearOutSlowInEasing   // Slow drift to full radius
-                    },
+                    animation = tween(2500, easing = LinearOutSlowInEasing),
                     repeatMode = RepeatMode.Restart
                 ),
                 label = "rippleScale"
             )
 
-            // Alpha fades out fast so only the initial snap is visible
             val rippleAlpha by infiniteTransition.animateFloat(
-                initialValue = 0.5f,
+                initialValue = 0.4f,
                 targetValue = 0f,
                 animationSpec = infiniteRepeatable(
-                    animation = keyframes {
-                        durationMillis = 2800
-                        0.5f at 0                                  // Full intensity at impulse
-                        0.35f at 200                               // Still visible during snap
-                        0.15f at 600                               // Fading through settle
-                        0f at 1200                                 // Gone before drift completes
-                    },
+                    animation = tween(2500, easing = LinearOutSlowInEasing),
                     repeatMode = RepeatMode.Restart
                 ),
                 label = "rippleAlpha"
@@ -200,51 +232,70 @@ fun HubPortalScreen(onNavigateToCanvas: () -> Unit) {
 
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val center = Offset(size.width / 2f, size.height / 2f)
-                val baseRadius = 70.dp.toPx() * finalScale * pulseScale
 
                 // =========================================================================
                 // AMBIENT STATIC GRID (Always visible — constant depth)
                 // =========================================================================
-                val ambientBrush = SolidColor(Color(0xFF00FFCC).copy(alpha = 0.04f))
+                val ambientBrush = SolidColor(Color(0xFF00FFCC).copy(alpha = 0.01f))
                 drawCircuitGrid(ambientBrush)
 
-                // Draw Sonar Grid when idle
-                if (hubState == HubState.IDLE && !isExpanding && zoomScale <= 1f) {
-                    val rippleRadius = 70.dp.toPx() * rippleScale
+                // Draw Sonar Grid when idle or when option is selected (pinch invitation)
+                val showPulse = (hubState == HubState.IDLE || selectedOption != null) && !isExpanding && zoomScale <= 1f
+                if (showPulse) {
+                    // When charging: sonar contracts inward (energy drawn toward bulb)
+                    // When idle: sonar expands outward (emitting ripple to invite)
+                    val effectiveScale = if (isCharging && hubState == HubState.IDLE) {
+                        3.0f - rippleScale  // Contracts: starts wide, shrinks to center
+                    } else {
+                        rippleScale
+                    }
+
+                    // Contraction Config Test / Experiment
+//                    val rippleProgress = ((rippleScale - 1f) / (2.9f - 1f)).coerceIn(0f, 1f)
+//
+//                    val inwardStart = 3.6f
+//                    val inwardEnd = 0.12f
+//
+//                    val effectiveScale = if (isCharging && hubState == HubState.IDLE) {
+//                        inwardStart + (inwardEnd - inwardStart) * rippleProgress
+//                    } else {
+//                        rippleScale
+//                    }
+
+                    val effectiveAlpha = if (isCharging && hubState == HubState.IDLE) {
+                        (1f - rippleAlpha) * 0.6f  // Brightens as it contracts
+                    } else {
+                        rippleAlpha
+                    }
+                    val rippleRadius = 70.dp.toPx() * effectiveScale
 
                     // Sonar Reveal of the full screen circuit grid
                     val sonarBrush = Brush.radialGradient(
                         0.5f to Color.Transparent,
-                        0.85f to Color(0xFF00FFCC).copy(alpha = rippleAlpha * 0.8f),
+                        0.85f to Color(0xFF00FFCC).copy(alpha = effectiveAlpha * 0.8f),
                         1.0f to Color.Transparent,
                         center = center,
                         radius = rippleRadius.coerceAtLeast(1f)
                     )
                     
                     drawCircuitGrid(sonarBrush)
+
+                    // Inner glow intensifies when charging — the bulb drinks the energy
+                    if (isCharging && hubState == HubState.IDLE) {
+                        drawCircle(
+                            color = Color(0xFF00FFCC).copy(alpha = 0.3f + rippleScale * 0.04f),
+                            radius = 16.dp.toPx(),
+                            center = center
+                        )
+                    }
                 }
 
                 // =========================================================================
-                // ENERGY BUILDUP + TENSION PULL (Grid contracts inward before burst)
+                // ENERGY BUILDUP (Grid brightens during expand transition)
+                // Lines appear proportionally as the burst grows — no pulse dependency
                 // =========================================================================
                 if (isExpanding) {
-                    val tensionAmount = gridTension.value
-                    val buildupAlpha = (expandScale.value / 3.5f).coerceIn(0f, 1f)
-                    
-                    // Tension: grid contracts inward a few pixels
-                    if (tensionAmount > 0f) {
-                        val tensionBrush = Brush.radialGradient(
-                            0.0f to Color(0xFF00FFCC).copy(alpha = 0.3f * tensionAmount),
-                            0.6f to Color(0xFF00FFCC).copy(alpha = 0.15f * tensionAmount),
-                            1.0f to Color.Transparent,
-                            center = center,
-                            radius = (size.minDimension * 0.5f * (1f - tensionAmount * 0.08f)).coerceAtLeast(1f)
-                        )
-                        drawCircuitGrid(tensionBrush)
-                    }
-                    
-                    // Buildup: grid brightens as energy builds
-                    val buildupBrush = SolidColor(Color(0xFF00FFCC).copy(alpha = 0.25f * buildupAlpha))
+                    val buildupBrush = SolidColor(Color(0xFF00FFCC).copy(alpha = 0.06f * (expandScale.value / 4f).coerceIn(0f, 1f)))
                     drawCircuitGrid(buildupBrush)
                 }
 
@@ -284,16 +335,16 @@ fun HubPortalScreen(onNavigateToCanvas: () -> Unit) {
         }
 
         // Electric Circuits Layer (rendered AFTER hub box so nodes receive touch)
-        if (menuProgress > 0f) {
+        if (menuProgress > 0f || isArmed) {
             ElectricCircuitMenu(
                 progress = menuProgress,
                 hubState = hubState,
+                currentSpace = currentSpace,
                 selectedOption = selectedOption,
                 onSpaceSelected = { space ->
-                    if (space == "Drawing") {
-                        hubState = HubState.DRAWING
-                        selectedOption = null
-                    }
+                    currentSpace = space
+                    onHubStateChange(HubState.SPACE)
+                    selectedOption = null
                 },
                 onOptionSelected = { option ->
                     selectedOption = option
@@ -326,49 +377,25 @@ fun HubPortalScreen(onNavigateToCanvas: () -> Unit) {
 fun ElectricCircuitMenu(
     progress: Float,
     hubState: HubState,
+    currentSpace: String?,
     selectedOption: String?,
     onSpaceSelected: (String) -> Unit,
     onOptionSelected: (String) -> Unit
 ) {
     val density = LocalDensity.current.density
-    
-    // =========================================================================
-    // STAGGERED ELECTRON ANIMATIONS (per-path with ~100ms delays)
-    // =========================================================================
-    val staggerDelays = listOf(0L, 100L, 220L) // Slightly irregular for organic feel
-    val electronProgress = List(3) { remember { Animatable(0f) } }
-    
-    LaunchedEffect(progress) {
-        if (progress > 0f) {
-            electronProgress.forEachIndexed { index, animatable ->
-                kotlinx.coroutines.launch {
-                    kotlinx.coroutines.delay(staggerDelays[index])
-                    animatable.animateTo(
-                        progress,
-                        animationSpec = tween(
-                            durationMillis = 400,
-                            easing = FastOutSlowInEasing
-                        )
-                    )
-                }
-            }
-        } else {
-            electronProgress.forEach { it.snapTo(0f) }
-        }
-    }
-
-    // Track which nodes have had their electron arrive (for hologram flicker)
-    val nodeArrived = electronProgress.map { it.value >= 0.95f }
 
     Box(modifier = Modifier.fillMaxSize()) {
+        // Accent color shifts to amber in Re-Ember space
+        val circuitColor = if (currentSpace == "Re-Ember") Color(0xFFFF8800) else Color(0xFF00FFCC)
+
         Canvas(modifier = Modifier.fillMaxSize()) {
             val center = Offset(size.width / 2f, size.height / 2f)
             val paths = getCircuitPaths(center)
             
             val faintPathPaint = Paint().apply {
-                color = Color(0xFF00FFCC).copy(alpha = 0.15f)
+                color = circuitColor.copy(alpha = 0.02f) // Whisper-dim — electrons write light
                 style = PaintingStyle.Stroke
-                strokeWidth = 3f
+                strokeWidth = 1.5f
                 asFrameworkPaint().apply {
                     strokeCap = android.graphics.Paint.Cap.ROUND
                     strokeJoin = android.graphics.Paint.Join.ROUND
@@ -376,7 +403,7 @@ fun ElectricCircuitMenu(
             }
 
             val electronGlowPaint = Paint().apply {
-                color = Color(0xFF00FFCC)
+                color = circuitColor
                 asFrameworkPaint().apply {
                     maskFilter = BlurMaskFilter(20f, BlurMaskFilter.Blur.NORMAL)
                 }
@@ -387,37 +414,38 @@ fun ElectricCircuitMenu(
             }
 
             val chargedPathPaint = Paint().apply {
-                color = Color(0xFF00FFCC).copy(alpha = 0.5f)
+                color = circuitColor.copy(alpha = 0.6f)
                 style = PaintingStyle.Stroke
-                strokeWidth = 3f
+                strokeWidth = 1.6f
                 asFrameworkPaint().apply {
-                    maskFilter = BlurMaskFilter(8f, BlurMaskFilter.Blur.NORMAL)
+                    maskFilter = BlurMaskFilter(5f, BlurMaskFilter.Blur.NORMAL)
                     strokeCap = android.graphics.Paint.Cap.ROUND
                     strokeJoin = android.graphics.Paint.Join.ROUND
                 }
             }
 
-            paths.forEachIndexed { index, fullPath ->
-                val pathProgress = electronProgress[index].value
-
+            paths.forEach { fullPath ->
+                // Draw faint guide path
                 drawIntoCanvas { canvas ->
                     canvas.drawPath(fullPath, faintPathPaint)
                 }
 
+                // Draw charged trail behind electron
                 val measure = android.graphics.PathMeasure(fullPath.asAndroidPath(), false)
-                if (pathProgress > 0f) {
+                if (progress > 0f) {
                     val trailPath = android.graphics.Path()
-                    measure.getSegment(0f, measure.length * pathProgress, trailPath, true)
+                    measure.getSegment(0f, measure.length * progress, trailPath, true)
                     drawIntoCanvas { canvas ->
                         canvas.drawPath(trailPath.asComposePath(), chargedPathPaint)
                     }
                 }
 
+                // Draw electron at current position
                 val pos = FloatArray(2)
-                val tan = FloatArray(2)
-                measure.getPosTan(measure.length * pathProgress, pos, tan)
+                val tangent = FloatArray(2) // required output buffer for getPosTan; direction unused
+                measure.getPosTan(measure.length * progress, pos, tangent)
 
-                if (pathProgress > 0f && pathProgress < 1f) {
+                if (progress > 0f) {
                     drawIntoCanvas { canvas ->
                         canvas.drawCircle(Offset(pos[0], pos[1]), 12f, electronGlowPaint)
                         canvas.drawCircle(Offset(pos[0], pos[1]), 6f, electronCorePaint)
@@ -427,38 +455,50 @@ fun ElectricCircuitMenu(
         }
 
         // =========================================================================
-        // TIER 1: Creative Space Selection (nodes materialize on electron arrival)
+        // TIER 1: Creative Spaces
         // =========================================================================
-        if (hubState == HubState.SPACES) {
-            val nodeLabels = listOf("Drawing", "Sound\n[Locked]", "Settings")
-            val nodeOffsets = listOf(
-                Pair((-300 / density).dp, (-350 / density).dp),
-                Pair((320 / density).dp, (-370 / density).dp),
-                Pair((100 / density).dp, (390 / density).dp)
-            )
-            val nodeCallbacks: List<() -> Unit> = listOf(
-                { onSpaceSelected("Drawing") },
-                {},
-                {}
+        if (progress > 0.8f && hubState == HubState.SPACES) {
+            val chargeAlpha = ((progress - 0.8f) * 5f)
+            val spacesNodes = listOf(
+                HubMenuNode("Image",    -300f, -350f, onClick = { onSpaceSelected("Image") }),
+                HubMenuNode("Audio",     320f, -370f, onClick = { onSpaceSelected("Audio") }),
+                HubMenuNode("Video",    -280f,  350f, onClick = { onSpaceSelected("Video") }),
+                HubMenuNode("Re-Ember",  250f,  350f, onClick = { onSpaceSelected("Re-Ember") })
             )
 
-            nodeLabels.forEachIndexed { index, label ->
-                if (nodeArrived[index]) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .alpha(chargeAlpha)
+            ) {
+                spacesNodes.forEach { node ->
                     HologramNode(
-                        text = label,
+                        text = node.label,
+                        isCharged = progress >= 1f,
+                        enabled = node.enabled,
+                        accentColor = if (node.label == "Re-Ember") Color(0xFFFF8800) else Color(0xFF00FFCC),
                         modifier = Modifier
                             .align(Alignment.Center)
-                            .offset(x = nodeOffsets[index].first, y = nodeOffsets[index].second),
-                        onClick = nodeCallbacks[index]
+                            .offset(
+                                x = (node.offsetX / density).dp,
+                                y = (node.offsetY / density).dp
+                            ),
+                        onClick = node.onClick
                     )
                 }
             }
         }
 
         // =========================================================================
-        // TIER 2: Drawing Space Options
+        // TIER 2: Image Space Options
         // =========================================================================
-        if (hubState == HubState.DRAWING) {
+        if (hubState == HubState.SPACE && currentSpace == "Image") {
+            val imageNodes = listOf(
+                HubMenuNode("Canvas", -300f, -350f, onClick = { onOptionSelected("Canvas") }),
+                HubMenuNode("Collection",        320f, -370f, onClick = { onOptionSelected("Collection") }),
+                HubMenuNode("Tools",             250f,  350f, onClick = { onOptionSelected("Tools") })
+            )
+
             val unselectedAlpha by animateFloatAsState(
                 targetValue = if (selectedOption != null) 0f else 1f,
                 animationSpec = tween(400, easing = FastOutSlowInEasing),
@@ -466,27 +506,127 @@ fun ElectricCircuitMenu(
             )
 
             Box(modifier = Modifier.fillMaxSize()) {
-                MenuNode(
-                    text = "Free Canvas",
-                    isCharged = true,
-                    isSelected = selectedOption == "Free Canvas",
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .offset(x = (-300 / density).dp, y = (-350 / density).dp)
-                        .alpha(if (selectedOption == "Free Canvas" || selectedOption == null) 1f else unselectedAlpha),
-                    onClick = { onOptionSelected("Free Canvas") }
-                )
+                imageNodes.forEach { node ->
+                    val isThisSelected = selectedOption == node.label.lines().first()
+                    MenuNode(
+                        text = node.label,
+                        isCharged = true,
+                        isSelected = isThisSelected,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .offset(
+                                x = (node.offsetX / density).dp,
+                                y = (node.offsetY / density).dp
+                            )
+                            .alpha(if (isThisSelected || selectedOption == null) 1f else unselectedAlpha),
+                        onClick = if (node.enabled) node.onClick else ({})
+                    )
+                }
+            }
+        }
 
-                MenuNode(
-                    text = "Import Canvas\n[Soon]",
-                    isCharged = true,
-                    isSelected = selectedOption == "Import Canvas",
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .offset(x = (320 / density).dp, y = (-370 / density).dp)
-                        .alpha(if (selectedOption == "Import Canvas" || selectedOption == null) 1f else unselectedAlpha),
-                    onClick = {}
-                )
+        // =========================================================================
+        // TIER 2: Audio Space Options
+        // =========================================================================
+        if (hubState == HubState.SPACE && currentSpace == "Audio") {
+            val audioNodes = listOf(
+                HubMenuNode("Collection", -300f, -350f, onClick = { onOptionSelected("Collection") }),
+                HubMenuNode("Tools",       320f, -370f, onClick = { onOptionSelected("Tools") })
+            )
+
+            val unselectedAlpha by animateFloatAsState(
+                targetValue = if (selectedOption != null) 0f else 1f,
+                animationSpec = tween(400, easing = FastOutSlowInEasing),
+                label = "unselectedFade"
+            )
+
+            Box(modifier = Modifier.fillMaxSize()) {
+                audioNodes.forEach { node ->
+                    val isThisSelected = selectedOption == node.label.lines().first()
+                    MenuNode(
+                        text = node.label,
+                        isCharged = true,
+                        isSelected = isThisSelected,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .offset(
+                                x = (node.offsetX / density).dp,
+                                y = (node.offsetY / density).dp
+                            )
+                            .alpha(if (isThisSelected || selectedOption == null) 1f else unselectedAlpha),
+                        onClick = node.onClick
+                    )
+                }
+            }
+        }
+
+        // =========================================================================
+        // TIER 2: Video Space Options
+        // =========================================================================
+        if (hubState == HubState.SPACE && currentSpace == "Video") {
+            val videoNodes = listOf(
+                HubMenuNode("Collection", -300f, -350f, onClick = { onOptionSelected("Collection") }),
+                HubMenuNode("Tools",       320f, -370f, onClick = { onOptionSelected("Tools") })
+            )
+
+            val unselectedAlpha by animateFloatAsState(
+                targetValue = if (selectedOption != null) 0f else 1f,
+                animationSpec = tween(400, easing = FastOutSlowInEasing),
+                label = "unselectedFade"
+            )
+
+            Box(modifier = Modifier.fillMaxSize()) {
+                videoNodes.forEach { node ->
+                    val isThisSelected = selectedOption == node.label.lines().first()
+                    MenuNode(
+                        text = node.label,
+                        isCharged = true,
+                        isSelected = isThisSelected,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .offset(
+                                x = (node.offsetX / density).dp,
+                                y = (node.offsetY / density).dp
+                            )
+                            .alpha(if (isThisSelected || selectedOption == null) 1f else unselectedAlpha),
+                        onClick = node.onClick
+                    )
+                }
+            }
+        }
+
+        // =========================================================================
+        // TIER 2: Re-Ember Options
+        // =========================================================================
+        if (hubState == HubState.SPACE && currentSpace == "Re-Ember") {
+            val reEmberNodes = listOf(
+                HubMenuNode("μEmbers", -300f, -350f, onClick = { onOptionSelected("μEmbers") })
+            )
+
+            val unselectedAlpha by animateFloatAsState(
+                targetValue = if (selectedOption != null) 0f else 1f,
+                animationSpec = tween(400, easing = FastOutSlowInEasing),
+                label = "unselectedFade"
+            )
+
+            Box(modifier = Modifier.fillMaxSize()) {
+                reEmberNodes.forEach { node ->
+                    val isThisSelected = selectedOption == node.label.replace("\n", " ").trim()
+                    MenuNode(
+                        text = node.label,
+                        accentColor = Color(0xFFFF8800),
+                        isCharged = true,
+                        isSelected = isThisSelected,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .offset(
+                                x = (node.offsetX / density).dp,
+                                y = (node.offsetY / density).dp
+                            )
+                            .alpha(if (isThisSelected || selectedOption == null) 1f else unselectedAlpha),
+                        onClick = node.onClick
+                    )
+                }
             }
         }
     }
@@ -495,27 +635,54 @@ fun ElectricCircuitMenu(
 /**
  * A menu node that materializes with a hologram flicker effect.
  * Brief alpha oscillation on entry, then settles into stable charged glow.
+ * Offline (disabled) nodes flicker in, then gently fade to dim.
  */
 @Composable
-fun HologramNode(text: String, modifier: Modifier, onClick: () -> Unit) {
+fun HologramNode(
+    text: String,
+    isCharged: Boolean = false,
+    enabled: Boolean = true,
+    accentColor: Color = Color(0xFF00FFCC),
+    modifier: Modifier,
+    onClick: () -> Unit
+) {
+    val isEmber = accentColor != Color(0xFF00FFCC)
     var hasFlickered by remember { mutableStateOf(false) }
     val flickerAlpha = remember { Animatable(0f) }
 
     LaunchedEffect(Unit) {
-        // Hologram flicker: rapid alpha oscillation then settle
-        flickerAlpha.animateTo(0.8f, tween(60))
-        flickerAlpha.animateTo(0.2f, tween(50))
-        flickerAlpha.animateTo(1f, tween(80))
-        flickerAlpha.animateTo(0.5f, tween(40))
-        flickerAlpha.animateTo(1f, tween(100))
+        if (isEmber) {
+            // Re-Ember: slower ignition — the ember takes time to glow
+            flickerAlpha.animateTo(0.3f, tween(120))
+            flickerAlpha.animateTo(0.1f, tween(80))
+            flickerAlpha.animateTo(0.5f, tween(150))
+            flickerAlpha.animateTo(0.2f, tween(100))
+            flickerAlpha.animateTo(0.7f, tween(200))
+            flickerAlpha.animateTo(0.4f, tween(120))
+            flickerAlpha.animateTo(1f, tween(300, easing = FastOutSlowInEasing))
+        } else {
+            // Standard hologram flicker: rapid alpha oscillation then settle
+            flickerAlpha.animateTo(0.8f, tween(60))
+            flickerAlpha.animateTo(0.2f, tween(50))
+            flickerAlpha.animateTo(1f, tween(80))
+            flickerAlpha.animateTo(0.5f, tween(40))
+            flickerAlpha.animateTo(1f, tween(100))
+        }
         hasFlickered = true
+
+        // Offline nodes fade to dim after the flicker settles
+        if (!enabled) {
+            delay(200.milliseconds) // Brief hold at full — so you see it before it dims
+            flickerAlpha.animateTo(0.25f, tween(400, easing = FastOutSlowInEasing))
+        }
     }
 
     MenuNode(
         text = text,
-        isCharged = hasFlickered,
+        isCharged = if (hasFlickered && enabled) isCharged else false,
+        accentColor = accentColor,
         modifier = modifier.alpha(flickerAlpha.value),
-        onClick = onClick
+        onClick = if (enabled) onClick else ({})
     )
 }
 
@@ -524,6 +691,7 @@ fun MenuNode(
     text: String,
     isCharged: Boolean = false,
     isSelected: Boolean = false,
+    accentColor: Color = Color(0xFF00FFCC),
     modifier: Modifier,
     onClick: () -> Unit
 ) {
@@ -543,14 +711,18 @@ fun MenuNode(
         isCharged -> chargeGlow
         else -> 0f
     }
-    val borderColor = Color(0xFF00FFCC).copy(alpha = borderAlpha.coerceIn(0f, 1f))
+    val borderColor = accentColor.copy(alpha = borderAlpha.coerceIn(0f, 1f))
+
+    // Selected background tint derives from accent color
+    val selectedBgColor = if (accentColor == Color(0xFF00FFCC))
+        Color(0xFF0A2020) else Color(0xFF201008)
     
     Box(
         modifier = modifier
             .clickable(onClick = onClick)
             .padding(8.dp)
             .background(
-                if (isSelected) Color(0xFF0A2020).copy(alpha = 0.95f)
+                if (isSelected) selectedBgColor.copy(alpha = 0.95f)
                 else Color(0xFF111111).copy(alpha = 0.9f),
                 RoundedCornerShape(6.dp)
             )
@@ -558,7 +730,7 @@ fun MenuNode(
                 if (isCharged || isSelected) Modifier.background(
                     Brush.linearGradient(
                         colors = listOf(
-                            Color(0xFF00FFCC).copy(alpha = if (isSelected) 0.12f else 0.05f),
+                            accentColor.copy(alpha = if (isSelected) 0.12f else 0.05f),
                             Color.Transparent
                         )
                     ),
@@ -567,7 +739,7 @@ fun MenuNode(
             ),
         contentAlignment = Alignment.Center
     ) {
-        // Capacitor glow border
+        // Capacitor / Hologram glow border
         if (isCharged || isSelected) {
             Canvas(modifier = Modifier.matchParentSize()) {
                 drawRoundRect(
@@ -583,7 +755,7 @@ fun MenuNode(
             text = text,
             color = when {
                 isSelected -> Color.White // Full white when selected — "locked in"
-                isCharged -> Color(0xFF00FFCC)
+                isCharged -> accentColor
                 else -> Color.White.copy(alpha = 0.6f)
             },
             fontFamily = FontFamily.Monospace,
@@ -594,16 +766,16 @@ fun MenuNode(
 }
 
 fun getCircuitPaths(center: Offset): List<Path> {
-    // Path 1: Top Left (Free Canvas)
+    // Path 1: Top Left — Image
     val p1 = Path().apply {
         moveTo(center.x, center.y)
         lineTo(center.x - 60f, center.y - 140f)
         lineTo(center.x - 140f, center.y - 120f)
         lineTo(center.x - 220f, center.y - 320f)
-        lineTo(center.x - 300f, center.y - 320f)
+        lineTo(center.x - 250f, center.y - 320f)
     }
-    
-    // Path 2: Top Right (Sound Canvas)
+
+    // Path 2: Top Right — Audio
     val p2 = Path().apply {
         moveTo(center.x, center.y)
         lineTo(center.x + 80f, center.y - 120f)
@@ -612,16 +784,25 @@ fun getCircuitPaths(center: Offset): List<Path> {
         lineTo(center.x + 320f, center.y - 340f)
     }
 
-    // Path 3: Bottom (Settings)
+    // Path 3: Bottom Right — Re-ember
     val p3 = Path().apply {
         moveTo(center.x, center.y)
-        lineTo(center.x + 40f, center.y + 160f)
-        lineTo(center.x - 40f, center.y + 240f)
-        lineTo(center.x + 40f, center.y + 360f)
-        lineTo(center.x + 100f, center.y + 360f)
+        lineTo(center.x + 60f, center.y + 140f)
+        lineTo(center.x + 120f, center.y + 180f)
+        lineTo(center.x + 220f, center.y + 320f)
+        lineTo(center.x + 250f, center.y + 320f)
     }
 
-    return listOf(p1, p2, p3)
+    // Path 4: Bottom Left — Video
+    val p4 = Path().apply {
+        moveTo(center.x, center.y)
+        lineTo(center.x - 40f, center.y + 140f)
+        lineTo(center.x - 120f, center.y + 220f)
+        lineTo(center.x - 240f, center.y + 320f)
+        lineTo(center.x - 280f, center.y + 320f)
+    }
+
+    return listOf(p1, p2, p3, p4)
 }
 
 fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCircuitGrid(brush: Brush) {

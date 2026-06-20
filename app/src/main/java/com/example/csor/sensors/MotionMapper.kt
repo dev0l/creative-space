@@ -16,8 +16,8 @@ class MotionMapper(context: Context, private val viewModel: MotionViewModel) : S
     private var lastRoll = 0f
     private var isFirstRead = true
 
-    // Sensitivity determines how fast the cursor moves relative to phone tilt.
-    private val sensitivity = 4000f
+    // Base sensitivity — lowered for precise default drawing
+    private val baseSensitivity = 2000f
 
     fun start() {
         rotationSensor?.let {
@@ -61,10 +61,11 @@ class MotionMapper(context: Context, private val viewModel: MotionViewModel) : S
         lastPitch = pitch
         lastRoll = roll
 
-        // Roll controls X-axis movement
-        // Pitch controls Y-axis movement (inverted to match screen coords)
-        val deltaX = deltaRoll * sensitivity
-        val deltaY = -deltaPitch * sensitivity
+        // Roll controls X-axis, Pitch controls Y-axis
+        val sensitivity = baseSensitivity * viewModel.sensitivity.value
+        val invert = if (viewModel.invertDrawing.value) -1f else 1f
+        val deltaX = deltaRoll * sensitivity * invert
+        val deltaY = -deltaPitch * sensitivity * invert
 
         viewModel.addDeltas(deltaX, deltaY)
     }

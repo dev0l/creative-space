@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "csOr"
+rootProject.name = "Creative Space"
 include(":app")
  
