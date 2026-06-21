@@ -1,4 +1,4 @@
-package com.example.csor.ui
+package com.devol.creativespace.ui
 
 import android.graphics.BlurMaskFilter
 import androidx.activity.compose.BackHandler
@@ -48,11 +48,14 @@ data class HubMenuNode(
 fun HubPortalScreen(
     hubState: HubState,
     onHubStateChange: (HubState) -> Unit,
+    initialSpace: String? = null,
     onSpaceCommit: (String, String) -> Unit
 ) {
     var isExpanding by remember { mutableStateOf(false) }
     var zoomScale by remember { mutableFloatStateOf(1f) }
-    var currentSpace by remember { mutableStateOf<String?>(null) }
+    // initialSpace seeds currentSpace on fresh composition (Option B return).
+    // No LaunchedEffect needed — synchronous, no frame gap.
+    var currentSpace by remember { mutableStateOf(initialSpace) }
     var selectedOption by remember { mutableStateOf<String?>(null) }
     val isArmed = hubState == HubState.SPACE && selectedOption != null
 
@@ -124,9 +127,11 @@ fun HubPortalScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF161616))
-            .pointerInput(Unit) {
+            // Pinch gesture — keyed on hubState + selectedOption so isArmed
+            // is recaptured when state changes (Unit would freeze the initial value)
+            .pointerInput(hubState, selectedOption) {
                 detectTransformGestures { _, _, zoom, _ ->
-                    if (!isExpanding) {
+                    if (!isExpanding && isArmed) {
                         zoomScale = (zoomScale * zoom).coerceAtLeast(1f)
                     }
                 }
@@ -234,12 +239,36 @@ fun HubPortalScreen(
                 val center = Offset(size.width / 2f, size.height / 2f)
 
                 // =========================================================================
-                // AMBIENT STATIC GRID (Always visible — constant depth)
+                // SCALE MATRIX — coherence map
+                //
+                // pulseScale  : 1.0 ↔ 1.05   (always breathing, all states)
+                // rippleScale : 1.0 → 2.9     (always cycling, visibility gated by showPulse)
+                // zoomScale   : 1.0 → ∞       (ONLY changes when isArmed, reset on commit/tap/back)
+                // finalScale  : zoomScale OR expandScale.value (during burst)
+                // expandScale : zoomScale → 4.0 (only during isExpanding burst animation)
+                //
+                // In non-armed states, zoomScale ≡ 1.0, so:
+                //   zoomIntensity ≡ 0, finalScale ≡ 1.0, outer ring hidden
+                //   tinyRadius = 6dp × 1.0 × pulseScale (breathing only)
+                //   coreGlow alpha = 0.8 (base), blur = 25 × 1.0 × pulseScale
+                //
+                // In armed state, pinch drives zoomScale:
+                //   tinyRadius grows, glow intensifies, outer ring appears
+                //   At 2.5x → burst animation takes over via expandScale
                 // =========================================================================
-                val ambientBrush = SolidColor(Color(0xFF00FFCC).copy(alpha = 0.01f))
+
+                // =========================================================================
+                // AMBIENT STATIC GRID (Always visible — constant depth)
+                // Accent shifts to amber in Re-Ember space, matching the circuit menu
+                // =========================================================================
+                val bulbAccent = if (currentSpace == "Re-Ember") Color(0xFFFF8800) else Color(0xFF00FFCC)
+
+                val ambientBrush = SolidColor(bulbAccent.copy(alpha = 0.01f))
                 drawCircuitGrid(ambientBrush)
 
-                // Draw Sonar Grid when idle or when option is selected (pinch invitation)
+                // Sonar pulse — visible in IDLE (breathing invitation) and when armed
+                // (pinch invitation). Suppressed during active pinch (zoomScale > 1)
+                // because the bulb glow takes over as visual feedback.
                 val showPulse = (hubState == HubState.IDLE || selectedOption != null) && !isExpanding && zoomScale <= 1f
                 if (showPulse) {
                     // When charging: sonar contracts inward (energy drawn toward bulb)
@@ -249,18 +278,6 @@ fun HubPortalScreen(
                     } else {
                         rippleScale
                     }
-
-                    // Contraction Config Test / Experiment
-//                    val rippleProgress = ((rippleScale - 1f) / (2.9f - 1f)).coerceIn(0f, 1f)
-//
-//                    val inwardStart = 3.6f
-//                    val inwardEnd = 0.12f
-//
-//                    val effectiveScale = if (isCharging && hubState == HubState.IDLE) {
-//                        inwardStart + (inwardEnd - inwardStart) * rippleProgress
-//                    } else {
-//                        rippleScale
-//                    }
 
                     val effectiveAlpha = if (isCharging && hubState == HubState.IDLE) {
                         (1f - rippleAlpha) * 0.6f  // Brightens as it contracts
@@ -272,7 +289,7 @@ fun HubPortalScreen(
                     // Sonar Reveal of the full screen circuit grid
                     val sonarBrush = Brush.radialGradient(
                         0.5f to Color.Transparent,
-                        0.85f to Color(0xFF00FFCC).copy(alpha = effectiveAlpha * 0.8f),
+                        0.85f to bulbAccent.copy(alpha = effectiveAlpha * 0.8f),
                         1.0f to Color.Transparent,
                         center = center,
                         radius = rippleRadius.coerceAtLeast(1f)
@@ -283,7 +300,7 @@ fun HubPortalScreen(
                     // Inner glow intensifies when charging — the bulb drinks the energy
                     if (isCharging && hubState == HubState.IDLE) {
                         drawCircle(
-                            color = Color(0xFF00FFCC).copy(alpha = 0.3f + rippleScale * 0.04f),
+                            color = bulbAccent.copy(alpha = 0.3f + rippleScale * 0.04f),
                             radius = 16.dp.toPx(),
                             center = center
                         )
@@ -295,12 +312,16 @@ fun HubPortalScreen(
                 // Lines appear proportionally as the burst grows — no pulse dependency
                 // =========================================================================
                 if (isExpanding) {
-                    val buildupBrush = SolidColor(Color(0xFF00FFCC).copy(alpha = 0.06f * (expandScale.value / 4f).coerceIn(0f, 1f)))
+                    val buildupBrush = SolidColor(bulbAccent.copy(alpha = 0.06f * (expandScale.value / 4f).coerceIn(0f, 1f)))
                     drawCircuitGrid(buildupBrush)
                 }
 
                 // =========================================================================
-                // TINY ENERGY SOURCE CONCEPT (Current Active Theme)
+                // TINY ENERGY SOURCE (Central bulb)
+                //
+                // Base: 6dp × pulseScale (gentle breathing)
+                // Armed + pinch: 6dp × zoomScale × pulseScale (grows with pinch)
+                // Expanding: 6dp × expandScale × pulseScale (burst animation)
                 // =========================================================================
                 val zoomIntensity = ((zoomScale - 1f) / 1.5f).coerceIn(0f, 1f)
                 val tinyRadius = 6.dp.toPx() * finalScale * pulseScale
@@ -308,7 +329,7 @@ fun HubPortalScreen(
                     color = Color.White
                 }
                 val coreGlowPaint = Paint().apply {
-                    color = Color(0xFF00FFCC).copy(alpha = 0.8f + zoomIntensity * 0.2f)
+                    color = bulbAccent.copy(alpha = 0.8f + zoomIntensity * 0.2f)
                     asFrameworkPaint().apply {
                         maskFilter = BlurMaskFilter(
                             (25f + zoomIntensity * 40f) * finalScale * pulseScale,
@@ -322,10 +343,12 @@ fun HubPortalScreen(
                     canvas.drawCircle(center, tinyRadius, coreLightPaint)
                 }
 
-                // Reactive outer ring during pinch gesture
+                // Reactive outer ring — only visible during armed pinch
+                // (zoomScale > 1.05 is impossible when not armed, so this is
+                // implicitly guarded by the pinch guard)
                 if (zoomScale > 1.05f && !isExpanding) {
                     drawCircle(
-                        color = Color(0xFF00FFCC).copy(alpha = 0.12f * zoomIntensity),
+                        color = bulbAccent.copy(alpha = 0.12f * zoomIntensity),
                         radius = tinyRadius * 4f,
                         center = center,
                         style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f)
@@ -353,9 +376,10 @@ fun HubPortalScreen(
         }
 
         // =========================================================================
-        // BURST FLASH OVERLAY (teal-tinted energy release)
+        // BURST FLASH OVERLAY (accent-tinted energy release)
         // =========================================================================
         if (flashAlpha > 0f) {
+            val flashAccent = if (currentSpace == "Re-Ember") Color(0xFFFF8800) else Color(0xFF00FFCC)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -363,7 +387,7 @@ fun HubPortalScreen(
                         Brush.radialGradient(
                             colors = listOf(
                                 Color.White.copy(alpha = flashAlpha * 0.9f),
-                                Color(0xFF00FFCC).copy(alpha = flashAlpha * 0.6f),
+                                flashAccent.copy(alpha = flashAlpha * 0.6f),
                                 Color.Transparent
                             )
                         )

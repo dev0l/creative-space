@@ -3,4 +3,5 @@
     <files-path name="collections" path="collections/" />
     <files-path name="embers" path="embers/" />
     <files-path name="gallery" path="gallery/" />
+    <cache-path name="cache" path="creative_space_cache/" />
 </paths>

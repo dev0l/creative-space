@@ -1,4 +1,4 @@
-package com.example.csor.ui
+package com.devol.creativespace.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -36,8 +36,8 @@ import android.graphics.BitmapFactory
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.example.csor.sensors.MotionMapper
-import com.example.csor.viewmodel.MotionViewModel
+import com.devol.creativespace.sensors.MotionMapper
+import com.devol.creativespace.viewmodel.MotionViewModel
 
 @Composable
 fun CanvasScreen(viewModel: MotionViewModel, onNavigateHome: () -> Unit) {

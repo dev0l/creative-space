@@ -1,4 +1,4 @@
-package com.example.csor.ui.theme
+package com.devol.creativespace.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

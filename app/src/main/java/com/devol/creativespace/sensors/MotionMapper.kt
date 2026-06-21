@@ -1,11 +1,11 @@
-package com.example.csor.sensors
+package com.devol.creativespace.sensors
 
 import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import com.example.csor.viewmodel.MotionViewModel
+import com.devol.creativespace.viewmodel.MotionViewModel
 import kotlin.math.abs
 
 class MotionMapper(context: Context, private val viewModel: MotionViewModel) : SensorEventListener {

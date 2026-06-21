@@ -1,4 +1,4 @@
-package com.example.csor
+package com.devol.creativespace
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -11,13 +11,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.csor.ui.CanvasScreen
-import com.example.csor.ui.CollectionScreen
-import com.example.csor.ui.HubPortalScreen
-import com.example.csor.ui.HubState
-import com.example.csor.ui.ReEmberScreen
-import com.example.csor.ui.ToolsScreen
-import com.example.csor.viewmodel.MotionViewModel
+import com.devol.creativespace.ui.CanvasScreen
+import com.devol.creativespace.ui.CollectionScreen
+import com.devol.creativespace.ui.EmberDetailScreen
+import com.devol.creativespace.ui.HubPortalScreen
+import com.devol.creativespace.ui.HubState
+import com.devol.creativespace.ui.ReEmberScreen
+import com.devol.creativespace.ui.ToolsScreen
+import com.devol.creativespace.viewmodel.MotionViewModel
 import androidx.compose.material3.MaterialTheme
 
 class MainActivity : ComponentActivity() {
@@ -40,11 +41,31 @@ class MainActivity : ComponentActivity() {
                 // Which creative space the user committed from (Image, Audio, Video, Re-Ember)
                 var activeSpace by remember { mutableStateOf("Image") }
 
+                // Which ember bundle to show in detail view
+                var activeEmberBundle by remember { mutableStateOf("") }
+
+                // =========================================================================
+                // Back navigation — Option B: return to previous space
+                //
+                // When leaving an endpoint (Canvas, Collection, Tools, etc.),
+                // back restores the hub to the space you came from. This preserves
+                // context — you can quickly navigate to another option within
+                // the same space without re-discovering from IDLE.
+                //
+                // IDLE is always one more tap/back away from SPACES.
+                // =========================================================================
+                val returnToSpace: () -> Unit = {
+                    currentScreen = "PORTAL"
+                    // Restore hub state to show the space menu for where we came from
+                    hubState = HubState.SPACE
+                }
+
                 when (currentScreen) {
                     "PORTAL" -> {
                         HubPortalScreen(
                             hubState = hubState,
                             onHubStateChange = { hubState = it },
+                            initialSpace = if (hubState == HubState.SPACE) activeSpace else null,
                             onSpaceCommit = { space, option ->
                                 activeSpace = space
                                 when (option) {
@@ -58,19 +79,19 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     "CANVAS" -> {
-                        // Back returns to Portal — strokes are preserved until explicitly cleared
-                        BackHandler { currentScreen = "PORTAL" }
+                        // Back returns to space menu — strokes are preserved until explicitly cleared
+                        BackHandler { returnToSpace() }
                         CanvasScreen(
                             viewModel = motionViewModel,
-                            onNavigateHome = { currentScreen = "PORTAL" }
+                            onNavigateHome = { returnToSpace() }
                         )
                     }
                     "COLLECTION" -> {
-                        BackHandler { currentScreen = "PORTAL" }
+                        BackHandler { returnToSpace() }
                         CollectionScreen(
                             viewModel = motionViewModel,
                             spaceType = activeSpace,
-                            onNavigateHome = { currentScreen = "PORTAL" },
+                            onNavigateHome = { returnToSpace() },
                             onSendToCanvas = if (activeSpace == "Image") { file ->
                                 motionViewModel.setBackgroundImage(file)
                                 currentScreen = "CANVAS"
@@ -78,17 +99,29 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     "TOOLS" -> {
-                        BackHandler { currentScreen = "PORTAL" }
+                        BackHandler { returnToSpace() }
                         ToolsScreen(
                             spaceType = activeSpace,
-                            onNavigateHome = { currentScreen = "PORTAL" }
+                            onNavigateHome = { returnToSpace() }
                         )
                     }
                     "RE_EMBER" -> {
-                        BackHandler { currentScreen = "PORTAL" }
+                        BackHandler { returnToSpace() }
                         ReEmberScreen(
                             viewModel = motionViewModel,
-                            onNavigateHome = { currentScreen = "PORTAL" }
+                            onNavigateHome = { returnToSpace() },
+                            onOpenBundle = { bundleName ->
+                                activeEmberBundle = bundleName
+                                currentScreen = "EMBER_DETAIL"
+                            }
+                        )
+                    }
+                    "EMBER_DETAIL" -> {
+                        BackHandler { currentScreen = "RE_EMBER" }
+                        EmberDetailScreen(
+                            viewModel = motionViewModel,
+                            bundleName = activeEmberBundle,
+                            onNavigateBack = { currentScreen = "RE_EMBER" }
                         )
                     }
                 }

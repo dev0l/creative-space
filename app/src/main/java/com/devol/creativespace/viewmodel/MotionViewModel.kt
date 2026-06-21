@@ -1,4 +1,4 @@
-package com.example.csor.viewmodel
+package com.devol.creativespace.viewmodel
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -18,9 +18,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 class MotionViewModel : ViewModel() {
     private val _completedStrokes = MutableStateFlow<List<List<Offset>>>(emptyList())
@@ -281,7 +284,7 @@ class MotionViewModel : ViewModel() {
      */
     fun addToEmberBundle(context: Context, bundleDir: File, sourceFile: File, spaceType: String) {
         try {
-            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.getDefault()).format(Date())
             val dest = File(bundleDir, "${spaceType.lowercase()}_$timestamp.${sourceFile.extension}")
             sourceFile.copyTo(dest)
 
@@ -336,6 +339,65 @@ class MotionViewModel : ViewModel() {
     fun deleteEmberBundle(context: Context, bundle: EmberBundle) {
         bundle.directory.deleteRecursively()
         loadEmberBundles(context)
+    }
+
+    /**
+     * Removes a single item from an ember bundle.
+     * Deletes the file and updates the manifest.
+     */
+    fun removeFromEmberBundle(context: Context, bundle: EmberBundle, file: File) {
+        try {
+            file.delete()
+            // Update manifest — remove matching item entry
+            val manifestFile = File(bundle.directory, "manifest.json")
+            if (manifestFile.exists()) {
+                val manifest = JSONObject(manifestFile.readText())
+                val items = manifest.getJSONArray("items")
+                val updatedItems = JSONArray()
+                for (i in 0 until items.length()) {
+                    val item = items.getJSONObject(i)
+                    if (item.optString("file") != file.name) {
+                        updatedItems.put(item)
+                    }
+                }
+                manifest.put("items", updatedItems)
+                manifestFile.writeText(manifest.toString(2))
+            }
+            loadEmberBundles(context)
+        } catch (_: Exception) {
+            // Removal failed silently
+        }
+    }
+
+    /**
+     * Creates a zip archive of all bundle contents.
+     * Includes all media files and the manifest.
+     * Returns the zip file in the cache directory, or null on failure.
+     */
+    fun createEmberZip(context: Context, bundle: EmberBundle): File? {
+        return try {
+            val sanitized = bundle.name.replace(Regex("[^a-zA-Z0-9_\\- ]"), "").trim()
+            val cacheSubdir = File(context.cacheDir, "creative_space_cache").also { it.mkdirs() }
+            val zipFile = File(cacheSubdir, "${sanitized.ifEmpty { "ember" }}.zip")
+            ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
+                // Add manifest
+                val manifestFile = File(bundle.directory, "manifest.json")
+                if (manifestFile.exists()) {
+                    zos.putNextEntry(ZipEntry("manifest.json"))
+                    manifestFile.inputStream().use { it.copyTo(zos) }
+                    zos.closeEntry()
+                }
+                // Add all items
+                bundle.items.forEach { file ->
+                    zos.putNextEntry(ZipEntry(file.name))
+                    file.inputStream().use { it.copyTo(zos) }
+                    zos.closeEntry()
+                }
+            }
+            zipFile
+        } catch (_: Exception) {
+            null
+        }
     }
 
     // =========================================================================

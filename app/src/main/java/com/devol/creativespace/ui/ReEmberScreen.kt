@@ -1,10 +1,11 @@
-package com.example.csor.ui
+package com.devol.creativespace.ui
 
 import android.content.Intent
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -30,8 +31,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
-import com.example.csor.viewmodel.EmberBundle
-import com.example.csor.viewmodel.MotionViewModel
+import com.devol.creativespace.viewmodel.EmberBundle
+import com.devol.creativespace.viewmodel.MotionViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -48,11 +49,13 @@ import java.util.Locale
 @Composable
 fun ReEmberScreen(
     viewModel: MotionViewModel,
-    onNavigateHome: () -> Unit
+    onNavigateHome: () -> Unit,
+    onOpenBundle: (String) -> Unit
 ) {
     val context = LocalContext.current
     val emberBundles by viewModel.emberBundles.collectAsState()
     var deleteTarget by remember { mutableStateOf<EmberBundle?>(null) }
+    var shareTarget by remember { mutableStateOf<EmberBundle?>(null) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var newEmberName by remember { mutableStateOf("") }
 
@@ -300,6 +303,105 @@ fun ReEmberScreen(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                 )
 
+            // =========================================================================
+            // SHARE OPTIONS DIALOG
+            // =========================================================================
+            shareTarget?.let { bundle ->
+                AlertDialog(
+                    onDismissRequest = { shareTarget = null },
+                    title = {
+                        Text(
+                            "Share \"${bundle.name}\"",
+                            fontFamily = FontFamily.SansSerif,
+                            fontWeight = FontWeight.Medium,
+                            color = Color(0xFFFF8800)
+                        )
+                    },
+                    text = {
+                        Column {
+                            Text(
+                                "${bundle.items.size} item${if (bundle.items.size != 1) "s" else ""} in this ember",
+                                fontFamily = FontFamily.SansSerif,
+                                color = Color.White.copy(alpha = 0.5f),
+                                fontSize = 13.sp
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                // Share all files via SEND_MULTIPLE
+                                if (bundle.items.isNotEmpty()) {
+                                    val uris = ArrayList(bundle.items.map { file ->
+                                        FileProvider.getUriForFile(
+                                            context,
+                                            "${context.packageName}.fileprovider",
+                                            file
+                                        )
+                                    })
+                                    val shareIntent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                                        type = "*/*"
+                                        putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(
+                                        Intent.createChooser(shareIntent, "Share ember: ${bundle.name} (${bundle.items.size} items)")
+                                    )
+                                }
+                                shareTarget = null
+                            }
+                        ) {
+                            Text(
+                                "Share files",
+                                color = Color(0xFFFF8800),
+                                fontFamily = FontFamily.SansSerif,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    },
+                    dismissButton = {
+                        Row {
+                            TextButton(
+                                onClick = {
+                                    // Create and share zip
+                                    val zipFile = viewModel.createEmberZip(context, bundle)
+                                    if (zipFile != null) {
+                                        val uri = FileProvider.getUriForFile(
+                                            context,
+                                            "${context.packageName}.fileprovider",
+                                            zipFile
+                                        )
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "application/zip"
+                                            putExtra(Intent.EXTRA_STREAM, uri)
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        context.startActivity(
+                                            Intent.createChooser(shareIntent, "Share ember: ${bundle.name}.zip")
+                                        )
+                                    }
+                                    shareTarget = null
+                                }
+                            ) {
+                                Text(
+                                    "Share as zip",
+                                    color = Color(0xFFFF8800).copy(alpha = 0.6f),
+                                    fontFamily = FontFamily.SansSerif
+                                )
+                            }
+                            TextButton(onClick = { shareTarget = null }) {
+                                Text(
+                                    "Cancel",
+                                    color = Color.White.copy(alpha = 0.5f),
+                                    fontFamily = FontFamily.SansSerif
+                                )
+                            }
+                        }
+                    },
+                    containerColor = Color(0xFF1A1008)
+                )
+            }
+
                 // Ember bundle list
                 LazyColumn(
                     contentPadding = PaddingValues(16.dp),
@@ -311,25 +413,8 @@ fun ReEmberScreen(
                     items(emberBundles) { bundle ->
                         EmberBundleCard(
                             bundle = bundle,
-                            onShare = {
-                                // Share the first item as a preview (or all, depending on count)
-                                val shareFile = bundle.thumbnail ?: bundle.items.firstOrNull()
-                                if (shareFile != null) {
-                                    val uri = FileProvider.getUriForFile(
-                                        context,
-                                        "${context.packageName}.fileprovider",
-                                        shareFile
-                                    )
-                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                        type = "*/*"
-                                        putExtra(Intent.EXTRA_STREAM, uri)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }
-                                    context.startActivity(
-                                        Intent.createChooser(shareIntent, "Share ember: ${bundle.name}")
-                                    )
-                                }
-                            },
+                            onTap = { onOpenBundle(bundle.name) },
+                            onShare = { shareTarget = bundle },
                             onDelete = { deleteTarget = bundle }
                         )
                     }
@@ -346,6 +431,7 @@ fun ReEmberScreen(
 @Composable
 fun EmberBundleCard(
     bundle: EmberBundle,
+    onTap: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -380,6 +466,7 @@ fun EmberBundleCard(
             .clip(RoundedCornerShape(12.dp))
             .background(Color(0xFF1A1008))
             .border(1.dp, Color(0xFFFF8800).copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+            .clickable { onTap() }
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

@@ -1,4 +1,4 @@
-package com.example.csor
+package com.devol.creativespace
 
 import org.junit.Test
 

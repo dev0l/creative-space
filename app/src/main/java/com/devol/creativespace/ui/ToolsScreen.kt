@@ -1,4 +1,4 @@
-package com.example.csor.ui
+package com.devol.creativespace.ui
 
 import android.content.Intent
 import android.net.Uri
