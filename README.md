@@ -71,4 +71,4 @@ Requires Android SDK with API 36 (Android 16). Minimum supported: API 24 (Androi
 ---
 
 *"The electrons trace all paths. The gesture is the key."*
-*Hand on Hearth 🔥*
+*🔥*
